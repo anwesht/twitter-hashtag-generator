@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # vim: set sw=4 sts=4 expandtab:
 # author: Giovanni Luca Ciampaglia <gciampag@indiana.edu>
+# Modified by: Anwesh Tuladhar <anwesh.tuladhar@gmail.com>
 
 # TODO: set request timeout to 90 seconds to manage stalls and implement
 # backoff strategies as documented here:
