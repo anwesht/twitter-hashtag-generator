@@ -1,4 +1,9 @@
-from argparse import ArgumentParser, FileType
+# Author: Anwesh Tuladhar <anwesh.tuladhar@gmail.com>
+# Website: https://anwesht.github.io/
+__author__ = 'Anwesh Tuladhar'
+
+
+from argparse import ArgumentParser
 import json
 import logging
 from datetime import datetime
@@ -6,6 +11,8 @@ import time
 import os
 import itertools
 from collections import defaultdict
+
+from nltk.parse.corenlp import CoreNLPParser
 
 
 LOG_FMT = '%(asctime)s: %(threadName)s: %(levelname)s: %(message)s'
@@ -24,14 +31,12 @@ def get_tweet_obj(tweet):
         tweet (json obj): The inner most tweet obj.
     """
     try:
-        # if 'is_quote_status' in tweet and tweet['is_quote_status']:
-        # if tweet['is_quote_status']:
-            # Parse quoted status or fall through to next check
+        # Parse quoted status or fall through to next check
         if 'quoted_status' in tweet:
             return get_tweet_obj(tweet['quoted_status'])
 
+        # Parse retweeted status or return as is.
         if 'retweeted_status' in tweet:
-            # Parse retweeted status
             return get_tweet_obj(tweet['retweeted_status'])
     except Exception as e:
         logging.error("Error while parsing tweet with id: {}\n{}".format(tweet['id'], e))
@@ -138,7 +143,27 @@ def parse_entities(e):
 
 
 def tokenize_tweet(t):
-    return t
+    """
+    Use the Stanford's PTBTokenizer to tokenize the tweet.
+    Requires Stanford CoreNLP Server to be running.
+    For setup information see: [
+        https://stanfordnlp.github.io/CoreNLP/index.html,
+        https://www.khalidalnajjar.com/setup-use-stanford-corenlp-server-python/
+    ]
+    Here we use the wrapper from `nltk` package instead of stanfordcorenlp
+
+    From the directory where you setup the stanford NLP, Run the server:
+    java -mx4g -cp "*" edu.stanford.nlp.pipeline.StanfordCoreNLPServer -annotators "tokenize,ssplit,pos,lemma,parse,sentiment" -port 9000 -timeout 30000
+
+    Args:
+        t: The tweet to be tokenized
+
+    Returns:
+        t (generator): A generator for the list of tokens generated from the tweet.
+    """
+    parser = CoreNLPParser(url='http://localhost:9000/')
+
+    return parser.tokenize(t)
 
 
 def process_tweets(args):
@@ -147,6 +172,10 @@ def process_tweets(args):
 
     Extracts the complete tweet text and hashtags, tokenizes them using the Stanford Tokenizer and
     writes 1000 tweets per file. The tokenized tweet text will not include the hashtags and any urls.
+
+    Output format:
+        {"text": "<space separated tokens for tweet>", "hashtags": "<space separated hashtags>"}
+
     Args:
         args: The parsed arguments.
 
@@ -170,7 +199,8 @@ def process_tweets(args):
 
         while not finished:
             cur_tweets = 0
-            chunk_fname = os.path.join(args.out_directory, '%s_%04d.json' % (filename, num_chunk))  # new chunk
+            # Create new file every `chunk` tweets.
+            chunk_fname = os.path.join(args.out_directory, '%s_%04d.json' % (filename, num_chunk))
 
             with open(chunk_fname, 'a') as otf:
                 while cur_tweets < args.chunk:
@@ -196,7 +226,7 @@ def process_tweets(args):
 
                     out_tweet = dict()
 
-                    out_tweet['text'] = tokenize_tweet(tweet_text)
+                    out_tweet['text'] = ' '.join(tokenize_tweet(tweet_text))
                     out_tweet['hashtags'] = ' '.join(hashtags)
 
                     otf.write(json.dumps(out_tweet) + '\n')
@@ -217,6 +247,9 @@ def process_tweets(args):
                                                                                             tt_end-tt_start))
 
 
+# -----------------------
+# Setup script arguments
+# -----------------------
 parser = ArgumentParser(description=__doc__)
 parser.add_argument('tweets_file',
                     help='Tweets JSON file to be processed.')
@@ -230,7 +263,7 @@ parser.add_argument('-od', '--out-directory',
 parser.add_argument('-m', '--max-tweets',
                     help='Maximum number of tweets to process.')
 parser.add_argument('-D', '--debug', action='store_const',
-                    help='print debug messages', dest='logging_level',
+                    help='Print debug messages', dest='logging_level',
                     default=logging.INFO, const=logging.DEBUG)
 
 
