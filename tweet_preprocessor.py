@@ -338,29 +338,6 @@ parser.add_argument('-D', '--debug', action='store_const',
                     help='Print debug messages', dest='logging_level',
                     default=logging.INFO, const=logging.DEBUG)
 
-# ex_group = parser.add_mutually_exclusive_group(required=True)
-# ex_group.add_argument('-t', '--tweets-file',
-#                    help='Tweets JSON file to be processed.')
-# ex_group.add_argument('-v', '--vocab-only',
-#                    action='store_true',
-#                    help='Only generate vocab files. Assumes tokenized tweets are in OUT_DIRECTORY')
-#
-# parser.add_argument('-c', '--chunk',
-#                     type=int,
-#                     default=5000,
-#                     help='Number of tweets to write per file.')
-# parser.add_argument('-od', '--out-directory',
-#                     default='./tokenized/',
-#                     help='Output directory for processed tweets.')
-# parser.add_argument('-m', '--max-tweets',
-#                     help='Maximum number of tweets to process.')
-# parser.add_argument('-G', '--gen-vocab',
-#                     action='store_true',
-#                     help='Generate vocab files while processing tweets.')
-# parser.add_argument('-D', '--debug', action='store_const',
-#                     help='Print debug messages', dest='logging_level',
-#                     default=logging.INFO, const=logging.DEBUG)
-
 
 if __name__ == '__main__':
     args = parser.parse_args()
