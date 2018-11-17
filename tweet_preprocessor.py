@@ -87,6 +87,7 @@ def parse_tweet(t):
         return tweet_text, hashtags, urls
     except Exception as e:
         logging.warning("Failed to parse tweet obj: {} \n {}".format(json.dumps(t), e))
+
         return '', [], []
 
 
