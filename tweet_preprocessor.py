@@ -10,7 +10,7 @@ from datetime import datetime
 import time
 import os
 import itertools
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 from nltk.parse.corenlp import CoreNLPParser
 
@@ -245,26 +245,120 @@ def process_tweets(args):
         logging.info("Total time taken for parsing {} out of {} tweets: {} seconds.".format(successfully_parsed,
                                                                                             total_tweets,
                                                                                             tt_end-tt_start))
+        if args.gen_vocab:
+            gen_vocab(args)
+
+
+def gen_vocab(args):
+    logging.info("Generating vocabulary...")
+    t_start = time.time()
+
+    tokenized_files = [os.path.join(args.out_directory, tf) for tf in os.listdir(args.out_directory) if tf.endswith('.json')]
+
+    tweet_counter = Counter()
+    hashtag_counter = Counter()
+
+    for tf in tokenized_files:
+        with open(tf, 'r') as f:
+            for line in f:
+                t = json.loads(line)
+                tweet_tokens = t['text'].split(' ')
+                hashtag_tokens = t['hashtags'].split(' ')
+
+                tweet_tokens = [t.strip() for t in tweet_tokens]
+                hashtag_tokens = [h.strip() for h in hashtag_tokens]
+
+                tweet_counter.update(tweet_tokens)
+                hashtag_counter.update(hashtag_tokens)
+
+    t_count = time.time()
+    logging.info("Vocab generation took {} seconds.".format(t_count - t_start))
+    logging.info("Vocab stats:")
+    logging.info("Number of unique tokens in tweets: {}".format(len(tweet_counter)))
+    logging.info("Number of unique hashtags: {}".format(len(hashtag_counter)))
+
+    logging.info("Writing vocab files...")
+
+    try:
+        filename = args.tweets_file.split('/')[-1]
+    except AttributeError:
+        filename = str(datetime.now())
+
+    with open(os.path.join(args.out_directory, '%s.tweet_vocab.txt' % filename), 'w') as tvf:
+        for tok, count in tweet_counter.items():
+            tvf.write(tok + ' ' + str(count) + '\n')
+
+    with open(os.path.join(args.out_directory, '%s.hashtag_vocab.txt' % filename), 'w') as hvf:
+        for tok, count in hashtag_counter.items():
+            hvf.write(tok + ' ' + str(count) + '\n')
+
+    t_end = time.time()
+    logging.info("Writing vocab files took {} seconds.".format(t_end - t_count))
 
 
 # -----------------------
 # Setup script arguments
 # -----------------------
-parser = ArgumentParser(description=__doc__)
-parser.add_argument('tweets_file',
-                    help='Tweets JSON file to be processed.')
-parser.add_argument('-c', '--chunk',
+parser = ArgumentParser(description='Script to tokenize tweets and/or generate vocabulary from tokenized tweets.')
+
+subparsers = parser.add_subparsers(title='Sub-commands',
+                                   description='Valid sub-commands are:',
+                                   dest='cmd',
+                                   help='sub-command help')
+subparsers.required = True
+
+tokenizer_subparser = subparsers.add_parser('tokenize',
+                                            # dest='tokenize',
+                                            help='Parse and Tokenize the given tweets.')
+tokenizer_subparser.set_defaults(tokenize=True)
+
+tokenizer_subparser.add_argument('tweets_file',
+                                 help='Tweets JSON file to be processed.')
+tokenizer_subparser.add_argument('-c', '--chunk',
                     type=int,
                     default=5000,
                     help='Number of tweets to write per file.')
+tokenizer_subparser.add_argument('-m', '--max-tweets',
+                    help='Maximum number of tweets to process.')
+tokenizer_subparser.add_argument('-g', '--gen-vocab',
+                    action='store_true',
+                    help='Generate vocab files while processing tweets.')
+
+vocab_subparser = subparsers.add_parser('vocab',
+                                        # dest='vocab',
+                                        help='Generate vocab files from tokenized tweet files.'
+                                                      'Assumes tokenized tweets are in OUT_DIRECTORY')
+vocab_subparser.set_defaults(tokenize=False)
+
 parser.add_argument('-od', '--out-directory',
                     default='./tokenized/',
                     help='Output directory for processed tweets.')
-parser.add_argument('-m', '--max-tweets',
-                    help='Maximum number of tweets to process.')
 parser.add_argument('-D', '--debug', action='store_const',
                     help='Print debug messages', dest='logging_level',
                     default=logging.INFO, const=logging.DEBUG)
+
+# ex_group = parser.add_mutually_exclusive_group(required=True)
+# ex_group.add_argument('-t', '--tweets-file',
+#                    help='Tweets JSON file to be processed.')
+# ex_group.add_argument('-v', '--vocab-only',
+#                    action='store_true',
+#                    help='Only generate vocab files. Assumes tokenized tweets are in OUT_DIRECTORY')
+#
+# parser.add_argument('-c', '--chunk',
+#                     type=int,
+#                     default=5000,
+#                     help='Number of tweets to write per file.')
+# parser.add_argument('-od', '--out-directory',
+#                     default='./tokenized/',
+#                     help='Output directory for processed tweets.')
+# parser.add_argument('-m', '--max-tweets',
+#                     help='Maximum number of tweets to process.')
+# parser.add_argument('-G', '--gen-vocab',
+#                     action='store_true',
+#                     help='Generate vocab files while processing tweets.')
+# parser.add_argument('-D', '--debug', action='store_const',
+#                     help='Print debug messages', dest='logging_level',
+#                     default=logging.INFO, const=logging.DEBUG)
 
 
 if __name__ == '__main__':
@@ -276,4 +370,8 @@ if __name__ == '__main__':
     if not os.path.exists(args.out_directory):
         os.makedirs(args.out_directory)
 
-    process_tweets(args)
+    if args.tokenize:
+        process_tweets(args)
+    else:
+        gen_vocab(args)
+
