@@ -1,4 +1,6 @@
 # Twitter hashtag generator
+ [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 Final project for CIS 6930 Social Media Mining. 
 
 Using text summarization technique using recurrent neural networks for hashtag generation.
@@ -7,7 +9,7 @@ Using text summarization technique using recurrent neural networks for hashtag g
 This script has two commands: 
 1. *tokenize*: Parse and tokenize tweets.
 2. *vocab*: Generate vocabulary files for the tokenized tweets.
-```
+```commandline
 usage: tweet_preprocessor.py [-h] [-od OUT_DIRECTORY] [-D]
                              {tokenize,vocab} ...
 
@@ -28,14 +30,14 @@ Sub-commands:
                         files.Assumes tokenized tweets are in OUT_DIRECTORY
 ```
 
-### Tokenizer:
+### Tokenizer
 This command takes a file containing valid tweets as input and outputs multiple files 
 each with `chunk` number of tokenized tweets.
 
 The output file has json objects of format: 
 {"text": "<space separated tokens for tweet>", "hashtags": "<space separated hashtags>"}
 
-```
+```commandline
 usage: tweet_preprocessor.py tokenize [-h] [-c CHUNK] [-m MAX_TWEETS] [-g]
                                       tweets_file
 
@@ -51,12 +53,12 @@ optional arguments:
   -g, --gen-vocab       Generate vocab files while processing tweets.
 ```
 
-### Vocab generator:
+### Vocab generator
 This command reads all the tokenized json files in the output directory and generates two
 vocab files: tweet_vocab.txt and hashtag_vocab.txt corresponding to the tokens present in
 tweet text and hashtags respectively.
 
-```
+```commandline
 usage: tweet_preprocessor.py vocab [-h]
 
 optional arguments:
