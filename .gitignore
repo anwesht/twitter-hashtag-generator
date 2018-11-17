@@ -34,6 +34,15 @@ MANIFEST
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
+*.log
+
+# at: Datasets and outputs
+datasets/
+tokenized/
+*.json
+
+# at: twitter credentials
+twitter_keys
 
 # Unit test / coverage reports
 htmlcov/
