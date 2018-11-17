@@ -86,7 +86,7 @@ def parse_tweet(t):
         hashtags, urls = parse_entities(t['entities'])
         return tweet_text, hashtags, urls
     except Exception as e:
-        logging.warning("Failed to parse tweet obj: {}".format(json.dumps(t)))
+        logging.warning("Failed to parse tweet obj: {} \n {}".format(json.dumps(t), e))
         return '', [], []
 
 
@@ -107,7 +107,7 @@ def parse_extended_tweet(et):
         hashtags, urls = parse_entities(et['entities'])
         return tweet_text, hashtags, urls
     except Exception as e:
-        logging.warning("Failed to parse extended tweet obj: {}".format(json.dumps(et)))
+        logging.warning("Failed to parse extended tweet obj: {} \n {}".format(json.dumps(et), e))
         return '', [], []
 
 
