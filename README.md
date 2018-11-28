@@ -5,6 +5,22 @@ Final project for CIS 6930 Social Media Mining.
 
 Using text summarization technique using recurrent neural networks for hashtag generation.
 
+## Stanford Core NLP
+This project uses Stanford's PTBTokenizer to tokenize the tweet.
+Requires Stanford CoreNLP Server to be running.
+For setup information see: 
+- https://stanfordnlp.github.io/CoreNLP/index.html
+- https://www.khalidalnajjar.com/setup-use-stanford-corenlp-server-python/
+
+Here we use the wrapper from `nltk` package instead of stanfordcorenlp
+
+### Running the server
+From the directory where you setup the stanford NLP, execute:
+```commandline
+java -mx4g -cp "*" edu.stanford.nlp.pipeline.StanfordCoreNLPServer -annotators "tokenize,ssplit,pos,lemma,parse,sentiment" -port 9000 -timeout 30000
+```
+
+
 ## Using tweet_preprocessor.py
 This script has two commands: 
 1. *tokenize*: Parse and tokenize tweets.

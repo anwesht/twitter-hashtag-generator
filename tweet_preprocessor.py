@@ -60,7 +60,7 @@ def process_tweet(tweet):
     """
     tweet = get_tweet_obj(tweet)
 
-    if tweet is None or tweet['lang'] != 'en':
+    if tweet is None or 'lang' not in tweet or tweet['lang'] != 'en':
         return '', [], []
 
     if tweet['truncated']:
