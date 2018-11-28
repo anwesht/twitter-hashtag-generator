@@ -41,7 +41,8 @@ tf.app.flags.DEFINE_integer('hidden_dim', 256, 'dimension of RNN hidden states')
 tf.app.flags.DEFINE_integer('emb_dim', 128, 'dimension of word embeddings')
 tf.app.flags.DEFINE_integer('batch_size', 10, 'minibatch size')  # was 16. Changed to 10. Divisor of 2000
 tf.app.flags.DEFINE_integer('max_enc_steps', 400, 'max timesteps of encoder (max source text tokens)')
-tf.app.flags.DEFINE_integer('max_dec_steps', 100, 'max timesteps of decoder (max summary tokens)')
+# tf.app.flags.DEFINE_integer('max_dec_steps', 100, 'max timesteps of decoder (max summary tokens)')
+tf.app.flags.DEFINE_integer('max_dec_steps', 2, 'max timesteps of decoder (max summary tokens)')
 tf.app.flags.DEFINE_integer('beam_size', 4, 'beam size for beam search decoding.')
 tf.app.flags.DEFINE_integer('min_dec_steps', 35,
                             'Minimum sequence length of generated summary. Applies only for beam search decoding mode')
@@ -156,15 +157,17 @@ class Example(object):
         hashtags_ids = [hashtags_vocab.word2id(w) for w in hashtag_words]  # list of word ids; OOVs are represented by the id for UNK token
 
         # Get the decoder input sequence and target sequence
-        self.dec_input, self.target = self.get_dec_inp_targ_seqs(hashtags_ids, start_decoding, stop_decoding)
+        # self.dec_input, self.target = self.get_dec_inp_targ_seqs(hashtags_ids, start_decoding, stop_decoding)
+        #  TODO: Using only 1 hashtag for now.
+        self.dec_input, self.target = self.get_dec_inp_targ_seqs(hashtags_ids[:(hps.max_dec_steps-1)], start_decoding, stop_decoding)
         self.dec_len = len(self.dec_input)
 
         # Store the original strings
         self.original_tweet = tweet
         self.original_hashtag = hashtags
 
-    @staticmethod
-    def get_dec_inp_targ_seqs(hashtags, start_id, stop_id):
+    # @staticmethod
+    def get_dec_inp_targ_seqs(self, hashtags, start_id, stop_id):
         """Given the reference summary as a sequence of tokens, return the input sequence for the decoder, and the target
         sequence which we will use to calculate loss. The sequence will be truncated if it is longer than max_len.
         The input sequence must start with the start_id and the target sequence must end with the stop_id
@@ -192,6 +195,7 @@ class Example(object):
         while len(self.dec_input) < max_len:
             self.dec_input.append(pad_id)
 
+        # AT: XXX: Comment to Test without padding target.
         while len(self.target) < max_len:
             self.target.append(pad_id)
 
@@ -214,6 +218,8 @@ class Batch:
            hps: hyperparameters
            vocab: Vocabulary object
         """
+        self._tweet_vocab = tweet_vocab
+        self._hashtag_vocab = hashtag_vocab
         self.pad_id = tweet_vocab.word2id(PAD_TOKEN) # id of the PAD token used to pad sequences
         self.init_encoder_seq(example_list, hps) # initialize the input to the encoder
         self.init_decoder_seq(example_list, hps) # initialize the input and targets for the decoder
@@ -283,7 +289,9 @@ class Batch:
         # self.target_batch = np.zeros((hps.batch_size, hps.max_dec_steps), dtype=np.int32)
         # self.dec_padding_mask = np.zeros((hps.batch_size, hps.max_dec_steps), dtype=np.float32)
         self.decoder_inputs = np.zeros((hps.batch_size, hps.max_dec_steps), dtype=np.int32)
+        # AT: TODO: Testing variable size
         self.decoder_outputs = np.zeros((hps.batch_size, hps.max_dec_steps), dtype=np.int32)
+        # self.decoder_outputs = []
         self.decoder_padding_mask = np.zeros((hps.batch_size, hps.max_dec_steps), dtype=np.float32)
 
         # at: Adding for TraningHelper: decoder_lengths
@@ -292,10 +300,21 @@ class Batch:
         # Fill in the numpy arrays
         for i, ex in enumerate(example_list):
             self.decoder_inputs[i, :] = ex.dec_input[:]
+
+            # -------
+            # DEBUG
+            # print('AT: ex.target[:]: {}, {}'.format(ex.target[:], ex.original_hashtag))
+            # for i in range(len(ex.target)):
+            #     print('AT: ex.target[{}]: {}'.format(i, self._hashtag_vocab.id2word(ex.target[i])))
+            # -------
+            # AT: TODO: Testing variable size
             self.decoder_outputs[i, :] = ex.target[:]
+            # self.decoder_outputs.append(ex.target[:])
+
             self.decoder_output_lengths[i] = ex.dec_len
 
-            for j in range(min(ex.dec_len, 10)):
+            # for j in range(min(ex.dec_len, 10)):
+            for j in range(ex.dec_len):
                 self.decoder_padding_mask[i][j] = 1
 
             # print('Initializing Decoder sequence: {:2f}% Complete. '.format(100.0 * i / len(example_list)), end='\r', flush=True)
@@ -464,10 +483,12 @@ class Model:
                                               name='encoder_inputs')
         self._decoder_inputs = tf.placeholder(tf.int32,
                                              shape=[hps.batch_size, None],  # [batch size, target seq length]
-                                             name='decoder_inputs')
+                                              # shape=[hps.batch_size, hps.max_dec_steps],  # [batch size, max dec steps]
+                                              name='decoder_inputs')
         # TODO: Check if we keep None OR use hps.max_dec_steps
         self._decoder_outputs = tf.placeholder(tf.int32,
                                                shape=[hps.batch_size, None],  # [batch size, target seq length]
+                                               # shape=[hps.batch_size, hps.max_dec_steps],  # [batch size, max dec steps]
                                                name='decoder_outputs')
 
         # Placeholder for sequence lengths of each src input.
@@ -498,6 +519,11 @@ class Model:
         """
         hps = self.hps
         src_vocab_size = self.tweet_vocab.size()
+        tgt_vocab_size = self.hashtag_vocab.size()
+
+        # at: adding initializers for sequence loss.
+        self.rand_unif_init = tf.random_uniform_initializer(-hps.rand_unif_init_mag, hps.rand_unif_init_mag, seed=123)
+        self.trunc_norm_init = tf.truncated_normal_initializer(stddev=hps.trunc_norm_init_std)
 
         # Add embedding layer
         with tf.variable_scope("embedding"):
@@ -518,7 +544,8 @@ class Model:
             #   _encoder_inputs: [batch size, source seq length]
             self._decoder_embedding = tf.get_variable(
                 name='decoder_embedding',
-                shape=[src_vocab_size, hps.emb_dim]  # [src vocab size, emb dim]
+                # shape=[src_vocab_size, hps.emb_dim]  # [src vocab size, emb dim]
+                shape=[tgt_vocab_size, hps.emb_dim]  # [tgt_vocab_size, emb dim]  # TODO: verify
             )
 
             # Lookup embedding for decoder input batch
@@ -528,13 +555,14 @@ class Model:
                 params=self._decoder_embedding,
                 ids=self._decoder_inputs  # [batch size, target seq length]
             )
+            print('AT: self._decoder_emb_inputs: {}'.format(self._decoder_emb_inputs))
 
         # Build the encoder
         with tf.variable_scope("encoder") as encoder_scope:
             # Build encoder RNN cell
             # at: This is deprecated. Replacing with new api.
-            encoder_cell = tf.nn.rnn_cell.BasicLSTMCell(hps.hidden_dim)
-            # encoder_cell = tf.nn.rnn_cell.LSTMCell(num_units=hps.hidden_dim, name='basic_lstm_cell')
+            # encoder_cell = tf.nn.rnn_cell.BasicLSTMCell(hps.hidden_dim)
+            encoder_cell = tf.nn.rnn_cell.LSTMCell(num_units=hps.hidden_dim, name='basic_lstm_cell')
 
             # Run Dynamic RNN
             #   encoder_outputs: [batch size, src seq length, hidden_dim]
@@ -547,26 +575,27 @@ class Model:
             )
 
             # TODO: Check whether to use outputs or state. pointer generator uses output, tutorial uses state.
-            self._encoder_states = encoder_outputs
+            self._encoder_states = encoder_state
             self._encoder_outputs = encoder_outputs
 
         with tf.variable_scope("decoder") as decoder_scope:
             # Build decoder RNN cell
             # This is deprecated. Replacing with new api.
-            decoder_cell = tf.nn.rnn_cell.BasicLSTMCell(hps.hidden_dim)
-            # decoder_cell = tf.nn.rnn_cell.LSTMCell(num_units=hps.hidden_dim, name='basic_lstm_cell')
+            # decoder_cell = tf.nn.rnn_cell.BasicLSTMCell(hps.hidden_dim)
+            decoder_cell = tf.nn.rnn_cell.LSTMCell(num_units=hps.hidden_dim, name='basic_lstm_cell')
 
             # Use the tensorflow seq2seq library.
             # Helper
             helper = tf.contrib.seq2seq.TrainingHelper(
                 inputs=self._decoder_emb_inputs,
                 # sequence_length=decoder_length, # TODO: decoder lengths ???
-                sequence_length=self._decoder_output_lengths, # TODO: decoder lengths. Setup in Batch
+                sequence_length=self._decoder_output_lengths,  # TODO: decoder lengths. Setup in Batch
+                # sequence_length=hps.max_dec_steps,  # XXX: Testing max decode steps
             )
 
             # Decoder
             self._output_layer = tf.layers.Dense(
-                units=self.hashtag_vocab.size(),
+                units=tgt_vocab_size,
                 use_bias=False,
                 name='output_projection'
             )
@@ -577,21 +606,42 @@ class Model:
 
             decoder_initial_state = encoder_state
 
+            print('Creating Basic Decoder: decoder_initial_state: {}'.format(decoder_initial_state))
+
             decoder = tf.contrib.seq2seq.BasicDecoder(
                 cell=decoder_cell,
                 helper=helper,
-                # initial_state=self._encoder_states,  # TODO: verify what to use.
-                initial_state=decoder_initial_state,
+                initial_state=self._encoder_states,  # TODO: verify what to use.
+                # initial_state=decoder_initial_state,
+                # initial_state=self._encoder_states,
                 # output_layer=projection_layer  # TODO: projection layer ??? Not used in actual code. Applying it later
+                output_layer=self._output_layer  # XXX: Adding projection layer here instead of separately.
             )
 
             # Dynamic decoding
             final_outputs, final_context_state, final_sequence_lengths = tf.contrib.seq2seq.dynamic_decode(
                 decoder=decoder,
                 swap_memory=True,  # Passed to tf.while_loop
+                output_time_major=False,  # TODO: See time major format.
                 scope=decoder_scope
             )
-            logits = self._output_layer(final_outputs.rnn_output)
+
+            #  ---------
+            # at: Used in loss calculation. XXX: Comment when using output_layer in BasicDecoder
+            # self._decoder_final_outputs = final_outputs.rnn_output
+            # logits = self._output_layer(self._decoder_final_outputs)
+            # XXX: Use this directly when using output_layer in BasicDecoder
+            self._decoder_final_outputs = final_outputs.rnn_output
+            logits = final_outputs.rnn_output
+
+            # --- DEBUG ----
+            print('_decoder_inputs: {}'.format(self._decoder_inputs.get_shape()))
+            print('_decoder_outputs: {}'.format(self._decoder_outputs.get_shape()))
+            print('final_outputs: {}'.format(final_outputs))
+            print('self._decoder_final_outputs : {}'.format(self._decoder_final_outputs.get_shape()))
+            print('logits: {}'.format(logits.get_shape()))
+            # print('decoder_cell.output_shape: {}'.format(decoder_cell.output_shape))
+            # --------------
 
             # Compute Training loss
             # TODO: pointer generator uses seq2se1.sequence_loss OR mas_and_avg loss. ???
@@ -599,6 +649,7 @@ class Model:
                 labels=self._decoder_outputs,  # outputs placeholder [batch size, target seq length]
                 logits=logits
             )
+            #  ---------
 
             # TODO: target_weights = zero-one matrix of the same size as decoder_outputs. It masks padding positions
             # outside of the target sequence lengths with values 0.
@@ -607,7 +658,47 @@ class Model:
             # XXX: Using decoder_padding_mask. See nmt/model.py:_compute_loss:657 for actual target_weights
             target_weights = self._decoder_padding_mask
 
-            self._train_loss = (tf.reduce_sum(crossent * target_weights) / hps.batch_size)
+            # self._train_loss = tf.reduce_sum(
+            #     crossent * target_weights) / tf.to_float(hps.batch_size)
+            self._train_loss = tf.reduce_sum(
+                crossent) / tf.to_float(hps.batch_size)
+                
+            """
+            # -------------------------
+            with tf.variable_scope('output_projection'):
+                w = tf.get_variable('w',
+                                    shape=[hps.hidden_dim, self.hashtag_vocab.size()],
+                                    dtype=tf.float32,
+                                    initializer=self.trunc_norm_init)
+                # w_t = tf.transpose(w)
+                v = tf.get_variable('v', [self.hashtag_vocab.size()], dtype=tf.float32, initializer=self.trunc_norm_init)
+                vocab_scores = []  # vocab_scores is the vocabulary distribution before applying softmax. Each entry on the list corresponds to one decoder step
+
+                # at: trying to create list of tensors with 2D shape.
+                unstacked_final_outputs = tf.unstack(self._decoder_final_outputs,
+                                                     num=2,  # at: Testing with this. Cannot unpack on it's own
+                                                     axis=1,  # Time axis.
+                                                     name='unstacked_final_outputs')
+
+                print("unstacked_final_outputs type: {}".format(type(unstacked_final_outputs)))
+                print("final_outputs type: {}".format(type(final_outputs)))
+                for i, output in enumerate(unstacked_final_outputs):
+                    if i > 0:
+                        tf.get_variable_scope().reuse_variables()
+                    vocab_scores.append(tf.nn.xw_plus_b(output, w, v))  # apply the linear layer
+
+                # at: TODO: Used for decode mode.
+                vocab_dists = [tf.nn.softmax(s) for s in
+                               vocab_scores]  # The vocabulary distributions. List length max_dec_steps of (batch_size, vsize) arrays. The words are in the order they appear in the vocabulary file.
+
+            # self._train_loss = tf.contrib.seq2seq.sequence_loss(tf.stack(vocab_scores, axis=1), self._target_batch,
+            #                                               self._dec_padding_mask)  # this applies softmax internally
+            self._train_loss = tf.contrib.seq2seq.sequence_loss(tf.stack(vocab_scores, axis=1), self._decoder_outputs,
+                                                                self._decoder_padding_mask)  # this applies softmax internally
+
+            tf.summary.scalar('loss', self._train_loss)
+            # -------------------------
+            """
 
             # Backpropagation pass: Gradient computation and optimization
             # Calculate and clip gradients
@@ -655,7 +746,7 @@ class Model:
         # self.global_step = tf.Variable(0, name='global_step', trainable=False)
 
         # Merge all summaries
-        self._summaries = tf.summary.merge_all()
+        # self._summaries = tf.summary.merge_all()
 
         t_end = time.time()
         tf.logging.info("Graph built in {} seconds.".format(t_end-t_start))
@@ -759,11 +850,11 @@ def run_training(model, sess_context_manager, sv, summary_writer, hps):
             try:
                 batch = batcher.next()
             except Exception as e:
-                tf.logging.warn('End of batcher for file: {}'.format(batch._filepath))
+                tf.logging.warn('End of batcher for file: {}'.format(batcher._filepath))
 
                 current_file_index = (current_file_index + 1) % num_files
-                batcher = Batcher(tokenized_files[current_file_index], model._tweet_vocab, model._hashtag_vocab,
-                                  model._hps)
+                batcher = Batcher(tokenized_files[current_file_index], model.tweet_vocab, model.hashtag_vocab,
+                                  model.hps)
                 batch = batcher.next()
 
             print('Current batch is from file: {}'.format(batcher._filepath))
@@ -782,12 +873,12 @@ def run_training(model, sess_context_manager, sv, summary_writer, hps):
                 raise Exception("Loss is not finite. Stopping.")
 
             # get the summaries and iteration number so we can write summaries to tensorboard
-            summaries = results['summaries'] # we will write these summaries to tensorboard using summary_writer
+            # summaries = results['summaries'] # we will write these summaries to tensorboard using summary_writer
             train_step = results['global_step'] # we need this to update our running average loss
 
-            summary_writer.add_summary(summaries, train_step) # write the summaries
-            if train_step % 100 == 0: # flush the summary writer every so often
-                summary_writer.flush()
+            # summary_writer.add_summary(summaries, train_step) # write the summaries
+            # if train_step % 100 == 0: # flush the summary writer every so often
+            #     summary_writer.flush()
 
 
 def main(unused_args):
