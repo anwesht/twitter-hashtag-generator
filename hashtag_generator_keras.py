@@ -22,6 +22,7 @@ from keras.layers import Input, Embedding, LSTM, Dense, Masking
 from keras import metrics, losses, optimizers
 from keras.preprocessing import sequence
 from keras.utils import to_categorical
+from keras.callbacks import ModelCheckpoint
 
 
 # ---------
@@ -306,6 +307,7 @@ class KerasModel:
         self._train_model = Model([self._encoder_inputs, self._decoder_inputs],
                                   dense_outputs)
 
+        logging.info('Encoder-Decoder training Model Summary: \n')
         self._train_model.summary()
 
         # ---------------------------------
@@ -327,23 +329,27 @@ class KerasModel:
         # ---------------------------------
         # Create Inference Decoder Model
         # ---------------------------------
-        # decoder_state_input_h = Input(shape=[hps.hidden_dim])
-        # decoder_state_input_c = Input(shape=[hps.hidden_dim])
-        #
-        # decoder_states_inputs = [decoder_state_input_h, decoder_state_input_c]
-        #
-        # inf_decoder_emb_inputs = decoder_embedding_layer(self._decoder_inputs)
-        # # Share the same decoder layer
-        # inf_decoder_outputs, dec_state_h, dec_state_c = decoder_layer(inf_decoder_emb_inputs,
-        #                                                               initial_state=decoder_states_inputs)
-        # inf_decoder_states = [dec_state_h, dec_state_c]
-        #
-        # # Inference dense layer
-        # inf_dense_outputs = decoder_dense_layer(inf_decoder_outputs)
-        #
-        # # Create the Inference Model
-        # self._inf_decoder_model = Model([decoder_emb_inputs] + decoder_states_inputs,
-        #                                 [inf_dense_outputs] + inf_decoder_states)
+        decoder_state_input_h = Input(shape=[hps.hidden_dim])
+        decoder_state_input_c = Input(shape=[hps.hidden_dim])
+
+        decoder_states_inputs = [decoder_state_input_h, decoder_state_input_c]
+
+        inf_decoder_emb_inputs = decoder_embedding_layer(self._decoder_inputs)
+        # Share the same decoder layer
+        # inf_decoder_outputs, dec_state_h, dec_state_c = decoder_layer(decoder_emb_inputs,
+        inf_decoder_outputs, dec_state_h, dec_state_c = decoder_layer(inf_decoder_emb_inputs,
+                                                                      initial_state=decoder_states_inputs)
+        inf_decoder_states = [dec_state_h, dec_state_c]
+
+        # Inference dense layer
+        inf_dense_outputs = decoder_dense_layer(inf_decoder_outputs)
+
+        # Create the Inference Model
+        self._inf_decoder_model = Model([self._decoder_inputs] + decoder_states_inputs,
+                                        [inf_dense_outputs] + inf_decoder_states)
+
+        logging.info('Inference Decoder Model Summary: \n {}')
+        self._inf_decoder_model.summary()
 
         """
         encoder_inputs = Input(shape=(sentenceLength,), name="Encoder_input")
@@ -379,21 +385,24 @@ class KerasModel:
 
         current_file_index = 0
         num_files = len(tokenized_files)
-        batcher = Batcher(tokenized_files[current_file_index], self.tweet_vocab, self.hashtag_vocab, self.hps)
+        # batcher = Batcher(tokenized_files[current_file_index], self.tweet_vocab, self.hashtag_vocab, self.hps)
 
         logging.info("Starting training loop...")
 
-        while True:  # repeats until interrupted
-            # Get next batch. If current batcher is exhausted, create new batcher.
-            try:
-                batch = batcher.get()
-            except Exception as e:
-                tf.logging.warn('End of batcher for file: {}'.format(batcher._filepath))
+        total_epoch = 0
 
-                current_file_index = (current_file_index + 1) % num_files
-                batcher = Batcher(tokenized_files[current_file_index], self.tweet_vocab, self.hashtag_vocab,
-                                  self.hps)
-                batch = batcher.get()
+        while total_epoch < self.hps.epoch:  # repeats until interrupted
+            # Get next batch. If current batcher is exhausted, create new batcher.
+            # try:
+            #     batch = batcher.get()
+            # except Exception as e:
+            if current_file_index == num_files:
+                total_epoch += 1
+
+            tf.logging.info('Creating batcher for file: {}'.format(tokenized_files[current_file_index]))
+            batcher = Batcher(tokenized_files[current_file_index], self.tweet_vocab, self.hashtag_vocab,
+                              self.hps)
+            batch = batcher.get()
 
             logging.info('Current batch is from file: {}'.format(batcher._filepath))
 
@@ -411,6 +420,91 @@ class KerasModel:
             # Log the loss history for this training epoch
             tf.logging.info('Training history: {}', history.history)
 
+            self.save_model(current_file_index)
+
+            if current_file_index % 5 == 0:
+                self.predict_sequence(tokenized_files[(current_file_index + 1) % num_files])
+
+            current_file_index = (current_file_index + 1) % num_files
+
+
+    def save_model(self, epoch):
+        # info = "-{epoch:02d}-{acc:.2f}.hdf5".format(epoch=epoch, acc=acc)
+        info = "-{epoch:02d}.hdf5".format(epoch=epoch)
+        self._train_model.save(filepath=os.path.join(self.hps.model_root, 'train'+info))
+        self._inf_encoder_model.save(filepath=os.path.join(self.hps.model_root, 'inf_encoder'+info))
+        self._inf_decoder_model.save(filepath=os.path.join(self.hps.model_root, 'inf_decoder'+info))
+
+
+    # generate target given source sequence
+    def predict_sequence(self, sourcefile, n_steps=2, num_tweets=10):
+        batch = Batcher(sourcefile, self.tweet_vocab, self.hashtag_vocab, self.hps).get()
+
+        logging.info('Predicting next batch...')
+        all_outputs = list()
+
+        tv = self.tweet_vocab
+        hv = self.hashtag_vocab
+
+        for i, inp in enumerate(batch.encoder_inputs[:num_tweets]):
+            # encode
+            enc_state = self._inf_encoder_model.predict([inp])
+            start_id = self.hashtag_vocab.word2id(START_HASHTAG)
+
+            # start of sequence input
+            # target_seq = np.array([0.0]).reshape(1, )
+            # target_seq = np.zeros(shape=batch.decoder_inputs[i].shape)
+            target_seq = np.zeros(shape=(1,1))
+            target_seq[0, 0] = start_id
+
+            print('target seq: {}'.format(target_seq.shape))
+            print('decoder input seq: {}'.format(batch.decoder_inputs[i].shape))
+
+            # collect predictions
+            output = list()
+            decoded_hashtag = ''
+            for t in range(n_steps):
+                print("Step: {}".format(t))
+                # predict next hashtag
+                yhat, h, c = self._inf_decoder_model.predict([target_seq] + enc_state)
+                # store prediction
+                output.append(yhat[0, 0, :])
+
+                # ---------
+                # Sample a token
+                sampled_token_index = np.argmax(yhat[0, -1, :])
+                sampled_char = self.hashtag_vocab.id2word(sampled_token_index)
+                decoded_hashtag += ' ' + sampled_char
+
+                # Exit condition: either hit max length
+                # or find stop character.
+                if sampled_char == END_HASHTAG:
+                    break
+
+                # Update the target sequence (of length 1).
+                target_seq = np.zeros((1, 1))
+                target_seq[0, 0] = sampled_token_index
+
+                # update state
+                enc_state = [h, c]
+
+            target = np.array(output)
+            all_outputs.append(target)
+
+            logging.info("Decoded Hashtag: {}".format(decoded_hashtag))
+
+            logging.info('tweet={} actual={}, pred={}'.format(
+                ' '.join([tv.id2word(t) for t in inp if t != tv.word2id(PAD_TOKEN)]),
+                ' '.join([hv.id2word(h) for h in batch.decoder_inputs[i] if t != hv.word2id(PAD_TOKEN)]),
+                decoded_hashtag)
+            )
+
+        # return all_outputs
+
+    # decode a one hot encoded string
+    def one_hot_decode(self, encoded_seq):
+        return [np.argmax(vector) for vector in encoded_seq]
+
 
 def main(args):
     if not os.path.exists(args.log_root):
@@ -418,6 +512,12 @@ def main(args):
             os.makedirs(args.log_root)
         else:
             raise Exception("Logs directory {} doesn't exist. Run in train mode to begin.".format(args.log_root))
+
+    model_dir = '{}-{}'.format(args.model_root, datetime.now())
+
+    args.model_root = model_dir
+    if not os.path.exists(model_dir):
+        os.makedirs(model_dir)
 
     tweet_vocab = Vocab(args.tweet_vocab)
     hashtag_vocab = Vocab(args.hashtag_vocab)
@@ -443,13 +543,13 @@ parser = ArgumentParser(description='Script to train and use the hashtag generat
 # Input data params
 # tf.app.flags.DEFINE_string('data_path', './tokenized', 'Path folder with tokenized json files.')
 parser.add_argument('-dp', '--data-path',
-                    default='./tokenized/',
+                    default='./tokenized_tweets4/',
                     help='Path to tokenized json files.')
 parser.add_argument('-tb', '--tweet-vocab',
-                    default='./tokenized/tweets.tweet_vocab.txt',
+                    default='./tokenized_tweets4/tweets-4.json.tweet_vocab.txt',
                     help='Path expression to text vocabulary file.')
 parser.add_argument('-htv', '--hashtag-vocab',
-                    default='./tokenized/tweets.hashtag_vocab.txt',
+                    default='./tokenized_tweets4/tweets-4.json.hashtag_vocab.txt',
                     help='Path expression to hashtag vocabulary file.')
 
 # Important settings
@@ -461,6 +561,16 @@ parser.add_argument('-m', '--mode',
 parser.add_argument('-l', '--log-root',
                     default='./logs',
                     help='Root directory for all logging.')
+
+parser.add_argument('-mr', '--model-root',
+                    default='./models',
+                    help='Root directory for all models.')
+
+parser.add_argument('-e', '--epoch',
+                    type=int,
+                    default=1,
+                    help='dimension of RNN hidden states')
+
 # tf.app.flags.DEFINE_string('exp_name', '',
 #                            'Name for experiment. Logs will be saved in a directory with this name, under log_root.')
 
