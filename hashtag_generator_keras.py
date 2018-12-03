@@ -35,7 +35,7 @@ PAD_TOKEN = '<PAD>'
 
 
 class Vocab:
-    def __init__(self, vocab_file):
+    def __init__(self, vocab_file, hps):
         """
         Class to track vocabulary used in tweets and hashtags
 
@@ -55,20 +55,41 @@ class Vocab:
 
         tf.logging.info('Loading vocab file: {}'.format(vocab_file))
 
+        skipped_vocabs = []
         with open(vocab_file, 'r') as vf:
             for line in vf:
                 try:
-                    w, _ = line.split()
+                    w, cnt = line.split()
                 except ValueError as e:
                     tf.logging.warn('Skipping... Error unpacking vocab: \"{}\" in file: {}'.format(line.strip(),
                                                                                                    vocab_file))
                     continue
+
+                if int(cnt) < hps.min_vocab_count:
+                    skipped_vocabs.append('{} {}'.format(w, cnt))
+                    continue
+                elif w.startswith('@'):
+                    skipped_vocabs.append('{} {}'.format(w, cnt))
+                    continue
+                else:
+                    e = str(w.encode('unicode-escape'))
+                    if e[2] == '\\':
+                        skipped_vocabs.append('{} {}'.format(w, cnt))
+                        continue
 
                 self._wordToId[w] = self._id
                 self._idToWord[self._id] = w
                 self._id += 1
 
         tf.logging.info("Finished creating vocabulary object. Num words = {}".format(self._id))
+
+        skipped_file = vocab_file.split('/')[-1] + '.skipped.txt'
+        with open(os.path.join(hps.log_root, skipped_file), 'w') as f:
+            f.writelines(skipped_vocabs)
+
+        tf.logging.info("Skipped {} words from file: {}. Skipped vocab stored in: {}".format(len(skipped_vocabs),
+                                                                                             vocab_file,
+                                                                                             skipped_file))
 
     def word2id(self, w):
         if w in self._wordToId:
@@ -513,14 +534,17 @@ def main(args):
         else:
             raise Exception("Logs directory {} doesn't exist. Run in train mode to begin.".format(args.log_root))
 
-    model_dir = '{}-{}'.format(args.model_root, datetime.now())
-
+    model_dir = os.path.join(args.model_root, str(datetime.now()))
     args.model_root = model_dir
     if not os.path.exists(model_dir):
-        os.makedirs(model_dir)
+        if args.mode == 'train':
+            os.makedirs(model_dir)
+        else:
+            raise Exception("Models directory {} doesn't exist. Run in train mode to begin.".format(args.log_root))
 
-    tweet_vocab = Vocab(args.tweet_vocab)
-    hashtag_vocab = Vocab(args.hashtag_vocab)
+
+    tweet_vocab = Vocab(args.tweet_vocab, args)
+    hashtag_vocab = Vocab(args.hashtag_vocab, args)
 
     logging.info('Hyper-parameters: {}'.format(args))
 
@@ -570,6 +594,11 @@ parser.add_argument('-e', '--epoch',
                     type=int,
                     default=1,
                     help='dimension of RNN hidden states')
+
+parser.add_argument('-minvc', '--min-vocab-count',
+                    type=int,
+                    default=50,
+                    help='Minimum word count to include in vocab')
 
 # tf.app.flags.DEFINE_string('exp_name', '',
 #                            'Name for experiment. Logs will be saved in a directory with this name, under log_root.')
