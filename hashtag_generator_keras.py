@@ -2,27 +2,22 @@
 # Website: https://anwesht.github.io/
 __author__ = 'Anwesh Tuladhar'
 
-import tensorflow as tf
-from tensorflow.python import debug as tf_debug
-
 import numpy as np
 
 import os
 import time
 from collections import namedtuple
 import json
-import queue
 
-from argparse import ArgumentParser
+# from argparse import ArgumentParser
 import logging
 from datetime import datetime
 
 from keras.models import Model
-from keras.layers import Input, Embedding, LSTM, Dense, Masking
+from keras.layers import Input, Embedding, LSTM, Dense
 from keras import metrics, losses, optimizers
 from keras.preprocessing import sequence
 from keras.utils import to_categorical
-from keras.callbacks import ModelCheckpoint
 
 
 # ---------
@@ -35,12 +30,16 @@ PAD_TOKEN = '<PAD>'
 
 
 class Vocab:
-    def __init__(self, vocab_file, hps):
+    def __init__(self, vocab_file, log_root, min_vocab_count=10):
         """
         Class to track vocabulary used in tweets and hashtags
 
         Args:
-            vocab_file: Path to vocab file
+            vocab_file: Path to vocab file.
+
+            Note: vocab_file is generated using tweet_preprocessor.py
+            The format of this file is:
+            <word> <number of times it appeared in the entire corpus>
         """
         self._wordToId = dict()
         self._idToWord = dict()
@@ -53,7 +52,7 @@ class Vocab:
             self._idToWord[self._id] = t
             self._id += 1
 
-        tf.logging.info('Loading vocab file: {}'.format(vocab_file))
+        logging.info('Loading vocab file: {}'.format(vocab_file))
 
         skipped_vocabs = []
         with open(vocab_file, 'r') as vf:
@@ -61,11 +60,11 @@ class Vocab:
                 try:
                     w, cnt = line.split()
                 except ValueError as e:
-                    tf.logging.warn('Skipping... Error unpacking vocab: \"{}\" in file: {}'.format(line.strip(),
+                    logging.warning('Skipping... Error unpacking vocab: \"{}\" in file: {}'.format(line.strip(),
                                                                                                    vocab_file))
                     continue
 
-                if int(cnt) < hps.min_vocab_count:
+                if int(cnt) < min_vocab_count:
                     skipped_vocabs.append('{} {}'.format(w, cnt))
                     continue
                 elif w.startswith('@'):
@@ -81,15 +80,16 @@ class Vocab:
                 self._idToWord[self._id] = w
                 self._id += 1
 
-        tf.logging.info("Finished creating vocabulary object. Num words = {}".format(self._id))
+        logging.info("Finished creating vocabulary object. Num words = {}".format(self._id))
 
         skipped_file = vocab_file.split('/')[-1] + '.skipped.txt'
-        with open(os.path.join(hps.log_root, skipped_file), 'w') as f:
-            f.writelines(skipped_vocabs)
+        with open(os.path.join(log_root, skipped_file), 'w') as f:
+            for s in skipped_vocabs:
+                f.write(s + '\n')
 
-        tf.logging.info("Skipped {} words from file: {}. Skipped vocab stored in: {}".format(len(skipped_vocabs),
-                                                                                             vocab_file,
-                                                                                             skipped_file))
+        logging.info("Skipped {} words from file: {}. Skipped vocab stored in: {}".format(len(skipped_vocabs),
+                                                                                          vocab_file,
+                                                                                          skipped_file))
 
     def word2id(self, w):
         if w in self._wordToId:
@@ -100,7 +100,7 @@ class Vocab:
         if i in self._idToWord:
             return self._idToWord[i]
 
-        tf.logging.error("Id {} not in vocabulary".format(i))
+        logging.error("Id {} not in vocabulary".format(i))
         raise KeyError("Id {} not in vocabulary".format(i))
 
     def size(self):
@@ -108,28 +108,31 @@ class Vocab:
 
 
 class Example(object):
-    """Class representing a train/val/test example for text summarization."""
+    """Class representing a train/val/test example."""
 
     def __init__(self, tweet, hashtags, tweet_vocab, hashtags_vocab, hps):
-        """Initializes the Example, performing tokenization and truncation to produce the encoder, decoder and target
+        """Initializes the Example. Produces the the encoder, decoder and target
         sequences, which are stored in self.
 
+        Note: Out-Of-Vocabulary words -> OOV
+
         Args:
-          tweet: source text; a string. each token is separated by a single space.
-          hashtags: list of strings, one per abstract sentence. In each sentence, each token is separated by
-            a single space.
+          tweet (str): source text: each token is separated by a single space.
+          hashtags (str): Each hashtag is separated by a single space.
           tweet_vocab: Tweet Vocabulary object
           hashtags_vocab: Hashtag Vocabulary object
           hps: hyperparameters
         """
         self.hps = hps
 
+        self.skip = False  # Flag to skip example if hashtag is none.
+
         # Get ids of special tokens
         start_decoding = hashtags_vocab.word2id(START_HASHTAG)
         stop_decoding = hashtags_vocab.word2id(END_HASHTAG)
 
         # Process the tweet
-        tweet_words = tweet.split()
+        tweet_words = tweet.split()  # list of strings
         self.enc_len = len(tweet_words)  # store the length of the tweet before padding
         self.enc_input = [tweet_vocab.word2id(w) for w in
                           tweet_words]  # list of word ids; OOVs are represented by the id for UNK token
@@ -139,11 +142,18 @@ class Example(object):
         hashtags_ids = [hashtags_vocab.word2id(w) for w in
                         hashtag_words]  # list of word ids; OOVs are represented by the id for UNK token
 
+        hashtags_ids = [h for h in hashtags_ids if h != hashtags_vocab.word2id(UNKNOWN_TOKEN)]
+
+        if len(hashtags_ids) == 0:
+            # logging.warning('Skipping example as hashtag token is UNK.')
+            self.skip = True
+            return
+
         # Get the decoder input sequence and target sequence
-        # self.dec_input, self.target = self.get_dec_inp_targ_seqs(hashtags_ids, start_decoding, stop_decoding)
+        self.dec_input, self.target = self.get_dec_inp_targ_seqs(hashtags_ids, start_decoding, stop_decoding)
         #  TODO: Using only 1 hashtag for now.
-        self.dec_input, self.target = self.get_dec_inp_targ_seqs(hashtags_ids[:(hps.max_dec_steps - 1)], start_decoding,
-                                                                 stop_decoding)
+        # self.dec_input, self.target = self.get_dec_inp_targ_seqs(hashtags_ids[:(hps.max_dec_steps - 1)], start_decoding,
+        #                                                          stop_decoding)
         self.dec_len = len(self.dec_input)
 
         # Store the original strings
@@ -151,10 +161,9 @@ class Example(object):
         self.original_hashtag = hashtags
 
     def get_dec_inp_targ_seqs(self, hashtags, start_id, stop_id):
-        """Given the reference summary as a sequence of tokens, return the input sequence for the decoder, and the target
-        sequence which we will use to calculate loss. The sequence will be truncated if it is longer than max_len.
-        The input sequence must start with the start_id and the target sequence must end with the stop_id
-        (but not if it's been truncated).
+        """Given the reference hashtags as a sequence of tokens, return the input sequence for the decoder,
+        and the target sequence which we will use to calculate loss.
+        The input sequence must start with the start_id and the target sequence must end with the stop_id.
 
         Args:
           hashtags: List of ids (integers)
@@ -162,26 +171,23 @@ class Example(object):
           stop_id: integer
 
         Returns:
-          inp: sequence length <=max_len starting with start_id
-          target: sequence same length as input, ending with stop_id only if there was no truncation
+          inp: sequence length starting with start_id
+          target: sequence same length as input, ending with stop_id
         """
-        inp = [start_id] + hashtags[:]
+        inp = [start_id] + hashtags[:]  # pre-pend start token for inp
         target = hashtags[:]
-        target.append(stop_id)  # end token
-        assert len(inp) == len(target)
+        target.append(stop_id)  # append end token for target
+        assert len(inp) == len(target)  # assert both have same length
         return inp, target
 
 
 class Batch(namedtuple(typename="Batch",
                        field_names=("encoder_inputs", "decoder_inputs", "decoder_targets"))):
-    """To allow for flexibily in returing different outputs."""
+    """Wrapper class for named tuples, to allow for flexibily in returning different outputs."""
     pass
 
 
 class Batcher:
-    # XXX: hardcoded
-    TWEETS_PER_FILE = 2000  # Number of tweets per file.
-
     def __init__(self, filepath, tweet_vocab, hashtag_vocab, hps):
         self._filepath = filepath
         self._tweet_vocab = tweet_vocab
@@ -201,23 +207,45 @@ class Batcher:
     def create_training_batches(self):
         """
         Creates a training sequence for the current file.
+
+        All sequences (encoder_inputs, decoder_inputs and decoder_targets) are padded to the max length of
+        the corresponding sequence in this file.
+
+        Required format of the input file:
+        {'text': <tweet tokens>, 'hashtags': <hashtag tokens>}
+
+        Shapes of sequences:
+        encoder_inputs: [<num_examples>, <max_tweet_sequence_length>]
+        decoder_inputs: [<num_examples>, <max_hashtag_sequence_length>]
+        decoder_targets: [<num_examples>, <max_hashtag_sequence_length>, <num_hashtag_vocab>]
+
+        The decoder targets is converted into a onehot encoded vector as the model ouputs categorical probabilities.
         """
-        tf.logging.info('Creating training batch for file: {}'.format(self._filepath))
+        logging.info('Creating training batch for file: {}'.format(self._filepath))
         t1 = time.time()
 
         all_examples = list()
-
+        skip_count = 0
         with open(self._filepath, 'r') as f:
             for i, line in enumerate(f):
-                # tweet, hashtags, tweet_vocab, hashtags_vocab, hps
                 obj = json.loads(line)
-                tweet = obj['text']
-                hashtags = obj['hashtags']
-
-                all_examples.append(Example(tweet, hashtags, self._tweet_vocab, self._hashtag_vocab, self._hps))
+                try:
+                    tweet = obj['text']
+                    hashtags = obj['hashtags']
+                except KeyError as e:
+                    logging.error('Given file({}) does not follow the required format'.format(self._filepath))
+                    logging.error(e)
+                    raise Exception(e)
+                ex = Example(tweet, hashtags, self._tweet_vocab, self._hashtag_vocab, self._hps)
+                if not ex.skip:
+                    all_examples.append(ex)
+                else:
+                    skip_count += 1
 
         t2 = time.time()
+
         logging.info('Creating training batch: Finished reading file in {} seconds.'.format(t2 - t1))
+        logging.info('Skipped {} examples as hashtag is UNK.'.format(skip_count))
 
         encoder_inputs = list()
         decoder_inputs = list()
@@ -228,6 +256,7 @@ class Batcher:
             decoder_inputs.append(e.dec_input)
             decoder_targets.append(e.target)
 
+        # One-hot encode the target sequence
         onehot_targets = to_categorical(sequence.pad_sequences(decoder_targets, padding='post'),
                                         num_classes=self._hashtag_vocab.size())
 
@@ -238,12 +267,20 @@ class Batcher:
 
         t3 = time.time()
 
-        tf.logging.info('Created training batch in: {} seconds. Total time taken: {}'.format(t3 - t2, t3 - t1))
+        logging.info('Created training batch in: {} seconds. Total time taken: {}'.format(t3 - t2, t3 - t1))
 
 
 class KerasModel:
     def __init__(self, hps, tweet_vocab, hashtag_vocab):
         """
+        This class holds 3 models:
+        1. Training Model: Encoder-Decoder RNN with:
+            inputs: a. Encoder input: vectorized tweet tokens
+                    b. Decoder input: vectorized hashtag token
+            outputs: Decoder targets: onehot encoded hashtag tokens for training.
+
+        2. Inference Encoder: Encoder for inference mode. Shares all weights with training model
+        3. Inference Decoder: Decoder for inference mode. Shares all weights with training model
 
         Args:
             hps (NamedTuple): Hyper-parameters to use for the model
@@ -256,7 +293,7 @@ class KerasModel:
         self.build_graph()
 
     def build_graph(self):
-        """ Build the Encoder-Decoder RNN network. """
+        """ Build the Encoder-Decoder RNN network for training and inference. """
         logging.info('Building Encoder-Decoder RNN network')
 
         hps = self.hps
@@ -267,22 +304,17 @@ class KerasModel:
         # Create input tensor to encoder RNN
         # shape = num_timesteps  => Timesteps will be the max of the batch.
         # Inputs will be padded to this length
-        self._encoder_inputs = Input(shape=(None,),
-        # self._encoder_inputs = Input(shape=(hps.max_enc_steps,),
+        encoder_inputs = Input(shape=(None,),
                                      dtype='int32',
                                      name='encoder_inputs')
 
-        # Add a Masking layer. The inputs will be padded to the length of the max sequence in batch.
-        # pad_id = self.tweet_vocab.word2id(PAD_TOKEN)
-        # masked_inputs = Masking(mask_value=pad_id, input_shape=[None])(self._encoder_inputs)
-
         # Encoder Embedding layer. Not giving input_length as it depends on each batch.
+        # Add Masking. The inputs will be padded to the length of the max sequence in batch.
         encoder_embedding_layer = Embedding(input_dim=self.tweet_vocab.size(),
                                             output_dim=hps.emb_dim,
                                             mask_zero=True,
                                             name='enc_emb_layer')
-        # encoder_emb_inputs = encoder_embedding_layer(masked_inputs)
-        encoder_emb_inputs = encoder_embedding_layer(self._encoder_inputs)
+        encoder_emb_inputs = encoder_embedding_layer(encoder_inputs)
 
         # Encoder LSTM layer
         encoder_layer = LSTM(units=hps.hidden_dim, return_state=True)
@@ -294,7 +326,7 @@ class KerasModel:
         # ---------------------------------
         # Create input tensor to decoder RNN
         # self._decoder_inputs = Input(shape=(hps.max_dec_steps,),
-        self._decoder_inputs = Input(shape=(None,),
+        decoder_inputs = Input(shape=(None,),
                                      dtype='int32',
                                      name='decoder_inputs')
 
@@ -307,7 +339,7 @@ class KerasModel:
                                             mask_zero=True,
                                             name='dec_emb_layer'
                                             )
-        decoder_emb_inputs = decoder_embedding_layer(self._decoder_inputs)
+        decoder_emb_inputs = decoder_embedding_layer(decoder_inputs)
 
         # Decoder LSTM layer
         decoder_layer = LSTM(units=hps.hidden_dim, return_state=True, return_sequences=True)
@@ -325,11 +357,12 @@ class KerasModel:
         # ---------------------------------
         # self._train_model = Model(inputs=[self._encoder_inputs, self._decoder_inputs],
         #                           outputs=dense_outputs)
-        self._train_model = Model([self._encoder_inputs, self._decoder_inputs],
+        self._train_model = Model([encoder_inputs, decoder_inputs],
                                   dense_outputs)
 
         logging.info('Encoder-Decoder training Model Summary: \n')
-        self._train_model.summary()
+        # self._train_model.summary()
+        self._train_model.summary(print_fn=lambda x: logging.info(x + '\n'))  # write summary to file
 
         # ---------------------------------
         # Compile Training Model
@@ -339,13 +372,14 @@ class KerasModel:
         self._train_model.compile(optimizer=optimizer,
                                   loss=losses.categorical_crossentropy,
                                   # loss=losses.sparse_categorical_crossentropy,
-                                  metrics=[metrics.categorical_accuracy])
+                                  metrics=[metrics.categorical_accuracy,
+                                           losses.categorical_crossentropy])
 
         # ---------------------------------
         # Create Inference Encoder Model
         # ---------------------------------
         # Share the same encoder layer.
-        self._inf_encoder_model = Model(inputs=self._encoder_inputs, outputs=encoder_states)
+        self._inf_encoder_model = Model(inputs=encoder_inputs, outputs=encoder_states)
 
         # ---------------------------------
         # Create Inference Decoder Model
@@ -355,7 +389,7 @@ class KerasModel:
 
         decoder_states_inputs = [decoder_state_input_h, decoder_state_input_c]
 
-        inf_decoder_emb_inputs = decoder_embedding_layer(self._decoder_inputs)
+        inf_decoder_emb_inputs = decoder_embedding_layer(decoder_inputs)
         # Share the same decoder layer
         # inf_decoder_outputs, dec_state_h, dec_state_c = decoder_layer(decoder_emb_inputs,
         inf_decoder_outputs, dec_state_h, dec_state_c = decoder_layer(inf_decoder_emb_inputs,
@@ -366,38 +400,12 @@ class KerasModel:
         inf_dense_outputs = decoder_dense_layer(inf_decoder_outputs)
 
         # Create the Inference Model
-        self._inf_decoder_model = Model([self._decoder_inputs] + decoder_states_inputs,
+        self._inf_decoder_model = Model([decoder_inputs] + decoder_states_inputs,
                                         [inf_dense_outputs] + inf_decoder_states)
 
-        logging.info('Inference Decoder Model Summary: \n {}')
-        self._inf_decoder_model.summary()
-
-        """
-        encoder_inputs = Input(shape=(sentenceLength,), name="Encoder_input")
-        encoder = LSTM(n_units, return_state=True, name='Encoder_lstm')
-        Shared_Embedding = Embedding(output_dim=embedding, input_dim=vocab_size, name="Embedding")
-        
-        word_embedding_context = Shared_Embedding(encoder_inputs)
-        encoder_outputs, state_h, state_c = encoder(word_embedding_context)
-        encoder_states = [state_h, state_c]
-        decoder_lstm = LSTM(n_units, return_sequences=True, return_state=True, name="Decoder_lstm")
-        word_embedding_answer = Shared_Embedding(decoder_inputs)
-        decoder_outputs, _, _ = decoder_lstm(word_embedding_answer, initial_state=encoder_states)
-        decoder_dense = Dense(vocab_size, activation='softmax', name="Dense_layer")
-        decoder_outputs = decoder_dense(decoder_outputs)
-        model = Model([encoder_inputs, decoder_inputs], decoder_outputs)
-        
-        
-        encoder_model = Model(encoder_inputs, encoder_states)
-        
-        decoder_state_input_h = Input(shape=(n_units,), name="H_state_input")
-        decoder_state_input_c = Input(shape=(n_units,), name="C_state_input")
-        decoder_states_inputs = [decoder_state_input_h, decoder_state_input_c]
-        decoder_outputs, state_h, state_c = decoder_lstm(word_embedding_answer, initial_state=decoder_states_inputs)
-        decoder_states = [state_h, state_c]
-        decoder_outputs = decoder_dense(decoder_outputs)
-        decoder_model = Model([decoder_inputs] + decoder_states_inputs, [decoder_outputs] + decoder_states)
-        """
+        logging.info('Inference Decoder Model Summary: \n')
+        # self._inf_decoder_model.summary()
+        self._inf_decoder_model.summary(print_fn=lambda x: logging.info(x + '\n'))
 
     def run_training(self):
         """Repeatedly runs training iterations, logging loss to screen and writing summaries"""
@@ -420,7 +428,7 @@ class KerasModel:
             if current_file_index == num_files:
                 total_epoch += 1
 
-            tf.logging.info('Creating batcher for file: {}'.format(tokenized_files[current_file_index]))
+            logging.info('Creating batcher for file: {}'.format(tokenized_files[current_file_index]))
             batcher = Batcher(tokenized_files[current_file_index], self.tweet_vocab, self.hashtag_vocab,
                               self.hps)
             batch = batcher.get()
@@ -436,10 +444,10 @@ class KerasModel:
                                             validation_split=0.2)
 
             t1 = time.time()
-            tf.logging.info('Training step took: %.3f seconds.', t1 - t0)
+            logging.info('Training step took: %.3f seconds.', t1 - t0)
 
             # Log the loss history for this training epoch
-            tf.logging.info('Training history: {}', history.history)
+            logging.info('Training history: {}', history.history)
 
             self.save_model(current_file_index)
 
@@ -448,14 +456,12 @@ class KerasModel:
 
             current_file_index = (current_file_index + 1) % num_files
 
-
     def save_model(self, epoch):
         # info = "-{epoch:02d}-{acc:.2f}.hdf5".format(epoch=epoch, acc=acc)
         info = "-{epoch:02d}.hdf5".format(epoch=epoch)
         self._train_model.save(filepath=os.path.join(self.hps.model_root, 'train'+info))
         self._inf_encoder_model.save(filepath=os.path.join(self.hps.model_root, 'inf_encoder'+info))
         self._inf_decoder_model.save(filepath=os.path.join(self.hps.model_root, 'inf_decoder'+info))
-
 
     # generate target given source sequence
     def predict_sequence(self, sourcefile, n_steps=2, num_tweets=10):
@@ -475,7 +481,7 @@ class KerasModel:
             # start of sequence input
             # target_seq = np.array([0.0]).reshape(1, )
             # target_seq = np.zeros(shape=batch.decoder_inputs[i].shape)
-            target_seq = np.zeros(shape=(1,1))
+            target_seq = np.zeros(shape=(1, 1))
             target_seq[0, 0] = start_id
 
             print('target seq: {}'.format(target_seq.shape))
@@ -520,7 +526,12 @@ class KerasModel:
                 decoded_hashtag)
             )
 
-        # return all_outputs
+        logging.info('Calculating metrics on file:{}'.format(sourcefile))
+        score = self._train_model.evaluate(x=[batch.encoder_inputs, batch.decoder_inputs],
+                                           y=batch.decoder_targets)
+
+        logging.info('Metrics: {}'.format(self._train_model.metrics_names))
+        logging.info('Scores: {}'.format(score))
 
     # decode a one hot encoded string
     def one_hot_decode(self, encoded_seq):
@@ -534,17 +545,27 @@ def main(args):
         else:
             raise Exception("Logs directory {} doesn't exist. Run in train mode to begin.".format(args.log_root))
 
+    logging.basicConfig(format=LOG_FMT, level=args.logging_level,
+                        filename=os.path.join(args.log_root, "output.{}.log".format(datetime.now())), filemode='a')
+
     model_dir = os.path.join(args.model_root, str(datetime.now()))
-    args.model_root = model_dir
+
+    new_args = {}
+    for k, v in args._asdict().items():
+        if k == 'model_root':
+            new_args[k]=model_dir
+        else:
+            new_args[k] = v
+
+    args = MyArgs(**new_args)
     if not os.path.exists(model_dir):
         if args.mode == 'train':
             os.makedirs(model_dir)
         else:
             raise Exception("Models directory {} doesn't exist. Run in train mode to begin.".format(args.log_root))
 
-
-    tweet_vocab = Vocab(args.tweet_vocab, args)
-    hashtag_vocab = Vocab(args.hashtag_vocab, args)
+    tweet_vocab = Vocab(args.tweet_vocab, args.log_root, args.min_vocab_count)
+    hashtag_vocab = Vocab(args.hashtag_vocab, args.log_root)
 
     logging.info('Hyper-parameters: {}'.format(args))
 
@@ -562,11 +583,12 @@ def main(args):
 
 LOG_FMT = '%(asctime)s: %(threadName)s: %(levelname)s: %(message)s'
 
+"""
 parser = ArgumentParser(description='Script to train and use the hashtag generator RNN model')
 
 # Input data params
-# tf.app.flags.DEFINE_string('data_path', './tokenized', 'Path folder with tokenized json files.')
 parser.add_argument('-dp', '--data-path',
+                    type=str,
                     default='./tokenized_tweets4/',
                     help='Path to tokenized json files.')
 parser.add_argument('-tb', '--tweet-vocab',
@@ -578,11 +600,13 @@ parser.add_argument('-htv', '--hashtag-vocab',
 
 # Important settings
 parser.add_argument('-m', '--mode',
+                    type='str',
                     default='train',
                     help='must be one of train/eval/decode')
 
 # Output params
 parser.add_argument('-l', '--log-root',
+                    type=str,
                     default='./logs',
                     help='Root directory for all logging.')
 
@@ -599,9 +623,6 @@ parser.add_argument('-minvc', '--min-vocab-count',
                     type=int,
                     default=50,
                     help='Minimum word count to include in vocab')
-
-# tf.app.flags.DEFINE_string('exp_name', '',
-#                            'Name for experiment. Logs will be saved in a directory with this name, under log_root.')
 
 # Hyperparameters
 parser.add_argument('-hd', '--hidden-dim',
@@ -640,11 +661,6 @@ parser.add_argument('-minds', '--min-dec-steps',
                     default=35,
                     help='Minimum sequence length of generated summary. Applies only for beam search decoding mode')
 
-# tf.app.flags.DEFINE_integer('vocab_size', 50000,
-#                             'Size of vocabulary. These will be read from the vocabulary file in order. '
-#                             'If the vocabulary file contains fewer words than this number, '
-#                             'or if this number is set to 0, will take all words in the vocabulary file.')
-
 parser.add_argument('-lr', '--learning-rate',
                     type=float,
                     default=0.15,
@@ -673,6 +689,14 @@ parser.add_argument('-mgn', '--max-grad-norm',
 parser.add_argument('-D', '--debug', action='store_const',
                     help='Print debug messages', dest='logging_level',
                     default=logging.INFO, const=logging.DEBUG)
+"""
+
+
+class MyArgs(namedtuple('args', ('data_path', 'tweet_vocab', 'hashtag_vocab', 'mode', 'log_root', 'model_root', 'epoch', 'min_vocab_count',
+                    'hidden_dim', 'emb_dim', 'batch_size', 'max_enc_steps', 'max_dec_steps', 'min_dec_steps',
+                    'learning_rate', 'rand_unif_init_mag', 'adagrad_init_acc', 'trunc_norm_init_std', 'max_grad_norm',
+                    'debug', 'logging_level'))):
+    pass
 
 # Utility flags, for restoring and changing checkpoints
 # tf.app.flags.DEFINE_boolean('restore_best_model', False,
@@ -685,8 +709,30 @@ parser.add_argument('-D', '--debug', action='store_const',
 
 
 if __name__ == "__main__":
-    args = parser.parse_args()
-    logging.basicConfig(format=LOG_FMT, level=args.logging_level,
-                        filename="output.{}.log".format(datetime.now()), filemode='a')
-    main(args)
+    # args = parser.parse_args()
+    # logging.basicConfig(format=LOG_FMT, level=args.logging_level,
+    #                     filename="output.{}.log".format(datetime.now()), filemode='a')
 
+    args = MyArgs(data_path='./tokenized_tweets4/',
+                  tweet_vocab='./tokenized_tweets4/tweets-4.json.tweet_vocab.txt',
+                  hashtag_vocab='./tokenized_tweets4/tweets-4.json.hashtag_vocab.txt',
+                  mode='train',
+                  log_root='./logs/{}'.format(datetime.now()),
+                  model_root='./models',
+                  epoch=1,
+                  min_vocab_count=50,
+                  hidden_dim=256,
+                  emb_dim=128,
+                  batch_size=10,
+                  max_enc_steps=400,
+                  max_dec_steps=10,
+                  min_dec_steps=35,
+                  learning_rate=0.15,
+                  rand_unif_init_mag=0.02,
+                  adagrad_init_acc=0.1,
+                  trunc_norm_init_std=1e-4,
+                  max_grad_norm=2.0,
+                  debug=logging.INFO,
+                  logging_level=logging.INFO)
+
+    main(args)
