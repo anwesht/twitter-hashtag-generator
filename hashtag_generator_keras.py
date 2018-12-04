@@ -9,7 +9,7 @@ import time
 from collections import namedtuple
 import json
 
-# from argparse import ArgumentParser
+from argparse import ArgumentParser
 import logging
 from datetime import datetime
 
@@ -151,9 +151,6 @@ class Example(object):
 
         # Get the decoder input sequence and target sequence
         self.dec_input, self.target = self.get_dec_inp_targ_seqs(hashtags_ids, start_decoding, stop_decoding)
-        #  TODO: Using only 1 hashtag for now.
-        # self.dec_input, self.target = self.get_dec_inp_targ_seqs(hashtags_ids[:(hps.max_dec_steps - 1)], start_decoding,
-        #                                                          stop_decoding)
         self.dec_len = len(self.dec_input)
 
         # Store the original strings
@@ -343,15 +340,12 @@ class KerasModel:
         # Create training Decoder RNN
         # ---------------------------------
         # Create input tensor to decoder RNN
-        # self._decoder_inputs = Input(shape=(hps.max_dec_steps,),
         decoder_inputs = Input(shape=(None,),
                                      dtype='int32',
                                      name='decoder_inputs')
 
-        # adding a masking layer for decoder inputs.
-        # dec_masked_inputs = Masking(mask_value=pad_id, input_shape=[None])(self._decoder_inputs)
-
         # Decoder Embedding layer. Not giving input_length as it depends on each batch
+        # Enabling the masking layer for decoder inputs.
         decoder_embedding_layer = Embedding(input_dim=self.hashtag_vocab.size(),
                                             output_dim=hps.emb_dim,
                                             mask_zero=True,
@@ -373,13 +367,10 @@ class KerasModel:
         # ---------------------------------
         # Create Training Model
         # ---------------------------------
-        # self._train_model = Model(inputs=[self._encoder_inputs, self._decoder_inputs],
-        #                           outputs=dense_outputs)
         self._train_model = Model([encoder_inputs, decoder_inputs],
                                   dense_outputs)
 
         logging.info('Encoder-Decoder training Model Summary: \n')
-        # self._train_model.summary()
         self._train_model.summary(print_fn=lambda x: logging.info(x + '\n'))  # write summary to file
 
         # ---------------------------------
@@ -409,7 +400,6 @@ class KerasModel:
 
         inf_decoder_emb_inputs = decoder_embedding_layer(decoder_inputs)
         # Share the same decoder layer
-        # inf_decoder_outputs, dec_state_h, dec_state_c = decoder_layer(decoder_emb_inputs,
         inf_decoder_outputs, dec_state_h, dec_state_c = decoder_layer(inf_decoder_emb_inputs,
                                                                       initial_state=decoder_states_inputs)
         inf_decoder_states = [dec_state_h, dec_state_c]
@@ -422,7 +412,6 @@ class KerasModel:
                                         [inf_dense_outputs] + inf_decoder_states)
 
         logging.info('Inference Decoder Model Summary: \n')
-        # self._inf_decoder_model.summary()
         self._inf_decoder_model.summary(print_fn=lambda x: logging.info(x + '\n'))
 
     def run_training(self):
@@ -432,17 +421,12 @@ class KerasModel:
 
         current_file_index = 0
         num_files = len(tokenized_files)
-        # batcher = Batcher(tokenized_files[current_file_index], self.tweet_vocab, self.hashtag_vocab, self.hps)
 
         logging.info("Starting training loop...")
 
         total_epoch = 0
 
         while total_epoch < self.hps.epoch:
-            # Get next batch. If current batcher is exhausted, create new batcher.
-            # try:
-            #     batch = batcher.get()
-            # except Exception as e:
             if current_file_index == num_files:
                 total_epoch += 1
 
@@ -592,14 +576,18 @@ def main(args):
 
     model_dir = os.path.join(args.model_root, str(datetime.now()))
 
-    new_args = {}
-    for k, v in args._asdict().items():
-        if k == 'model_root':
-            new_args[k]=model_dir
-        else:
-            new_args[k] = v
+    # XXX: Comment this if using MyArgs
+    args.model_root = model_dir
 
-    args = MyArgs(**new_args)
+    # XXX: Uncomment this if using MyArgs
+    # new_args = {}
+    # for k, v in args._asdict().items():
+    #     if k == 'model_root':
+    #         new_args[k]=model_dir
+    #     else:
+    #         new_args[k] = v
+    #
+    # args = MyArgs(**new_args)
     if not os.path.exists(model_dir):
         if args.mode == 'train':
             os.makedirs(model_dir)
@@ -628,24 +616,23 @@ def main(args):
 
 LOG_FMT = '%(asctime)s: %(threadName)s: %(levelname)s: %(message)s'
 
-"""
+
 parser = ArgumentParser(description='Script to train and use the hashtag generator RNN model')
 
 # Input data params
 parser.add_argument('-dp', '--data-path',
-                    type=str,
                     default='./tokenized_tweets4/',
                     help='Path to tokenized json files.')
+
 parser.add_argument('-tb', '--tweet-vocab',
                     default='./tokenized_tweets4/tweets-4.json.tweet_vocab.txt',
                     help='Path expression to text vocabulary file.')
+
 parser.add_argument('-htv', '--hashtag-vocab',
                     default='./tokenized_tweets4/tweets-4.json.hashtag_vocab.txt',
                     help='Path expression to hashtag vocabulary file.')
 
-# Important settings
 parser.add_argument('-m', '--mode',
-                    type='str',
                     default='train',
                     help='must be one of train/eval/decode')
 
@@ -659,6 +646,7 @@ parser.add_argument('-mr', '--model-root',
                     default='./models',
                     help='Root directory for all models.')
 
+# Model Params
 parser.add_argument('-e', '--epoch',
                     type=int,
                     default=1,
@@ -705,77 +693,60 @@ parser.add_argument('-lr', '--learning-rate',
                     default=0.15,
                     help='learning rate')
 
-parser.add_argument('-ruim', '--rand-unif-init-mag',
-                    type=float,
-                    default=0.02,
-                    help='magnitude for lstm cells random uniform inititalization')
-
-parser.add_argument('-agic', '--adagrad-init-acc',
-                    type=float,
-                    default=0.1,
-                    help='initial accumulator value for Adagrad')
-
-parser.add_argument('-tnis', '--trunc-norm-init-std',
-                    type=float,
-                    default=1e-4,
-                    help='std of trunc norm init, used for initializing everything else')
-
-parser.add_argument('-mgn', '--max-grad-norm',
-                    type=float,
-                    default=2.0,
-                    help='for gradient clipping')
-                    
 parser.add_argument('-mrp', '--load-model-path',
                     default='./saved_models',
                     help='Path to saved models to load.')
 
 parser.add_argument('-lm', '--load-model',
-                    default=True,
+                    default=False,
                     help='Path to saved models to load.')
 
-parser.add_argument('-mrp', '--load-model-path',
-                    default='./saved_models',
+parser.add_argument('-mn', '--model-num',
+                    type=int,
+                    default=231,
                     help='Path to saved models to load.')
 
 parser.add_argument('-D', '--debug', action='store_const',
                     help='Print debug messages', dest='logging_level',
                     default=logging.INFO, const=logging.DEBUG)
+
 """
-
-
-class MyArgs(namedtuple('args', ('data_path', 'tweet_vocab', 'hashtag_vocab', 'mode', 'log_root', 'model_root', 'epoch', 'min_vocab_count',
-                    'hidden_dim', 'emb_dim', 'batch_size', 'max_enc_steps', 'max_dec_steps', 'min_dec_steps',
-                    'learning_rate', 'rand_unif_init_mag', 'adagrad_init_acc', 'trunc_norm_init_std', 'max_grad_norm',
-                    'debug', 'logging_level', 'load_model', 'model_num', 'load_model_path'))):
-    pass
+NOTE: Argparse caused an error while running on gaivi. Comment ArgParse and uncomment the relevant MyArgs()
+code if there are any issues with arg parse.
+"""
+# class MyArgs(namedtuple('args', ('data_path', 'tweet_vocab', 'hashtag_vocab', 'mode', 'log_root', 'model_root', 'epoch', 'min_vocab_count',
+#                     'hidden_dim', 'emb_dim', 'batch_size', 'max_enc_steps', 'max_dec_steps', 'min_dec_steps',
+#                     'learning_rate', 'rand_unif_init_mag', 'adagrad_init_acc', 'trunc_norm_init_std', 'max_grad_norm',
+#                     'debug', 'logging_level', 'load_model', 'model_num', 'load_model_path'))):
+#     pass
 
 
 if __name__ == "__main__":
-    # args = parser.parse_args()
+    args = parser.parse_args()
 
-    args = MyArgs(data_path='./tokenized_tweets4/',
-                  tweet_vocab='./tokenized_tweets4/tweets-4.json.tweet_vocab.txt',
-                  hashtag_vocab='./tokenized_tweets4/tweets-4.json.hashtag_vocab.txt',
-                  mode='train',
-                  log_root='./logs/{}'.format(datetime.now()),
-                  model_root='./models',
-                  load_model_path='./saved_models',
-                  load_model=True,
-                  model_num=231,
-                  epoch=1,
-                  min_vocab_count=50,
-                  hidden_dim=256,
-                  emb_dim=128,
-                  batch_size=10,
-                  max_enc_steps=400,
-                  max_dec_steps=10,
-                  min_dec_steps=35,
-                  learning_rate=0.15,
-                  rand_unif_init_mag=0.02,
-                  adagrad_init_acc=0.1,
-                  trunc_norm_init_std=1e-4,
-                  max_grad_norm=2.0,
-                  debug=logging.INFO,
-                  logging_level=logging.INFO)
+    # args = MyArgs(data_path='./tokenized_tweets4/',
+    #               tweet_vocab='./tokenized_tweets4/tweets-4.json.tweet_vocab.txt',
+    #               hashtag_vocab='./tokenized_tweets4/tweets-4.json.hashtag_vocab.txt',
+    #               mode='train',
+    #               log_root='./logs/{}'.format(datetime.now()),
+    #               model_root='./models',
+    #               load_model_path='./saved_models',
+    #               load_model=True,
+    #               model_num=231,
+    #               epoch=1,
+    #               min_vocab_count=50,
+    #               hidden_dim=256,
+    #               emb_dim=128,
+    #               batch_size=10,
+    #               max_enc_steps=400,
+    #               max_dec_steps=10,
+    #               min_dec_steps=35,
+    #               learning_rate=0.15,
+    #               rand_unif_init_mag=0.02,
+    #               adagrad_init_acc=0.1,
+    #               trunc_norm_init_std=1e-4,
+    #               max_grad_norm=2.0,
+    #               debug=logging.INFO,
+    #               logging_level=logging.INFO)
 
     main(args)
