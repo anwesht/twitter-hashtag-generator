@@ -1,4 +1,5 @@
 # Twitter hashtag generator
+[![Codacy Badge](https://api.codacy.com/project/badge/Grade/f2e8118b369c436d9f4dc91fba7d7c21)](https://app.codacy.com/app/anwesht/twitter-hashtag-generator?utm_source=github.com&utm_medium=referral&utm_content=anwesht/twitter-hashtag-generator&utm_campaign=Badge_Grade_Dashboard)
  [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Final project for CIS 6930 Social Media Mining. 
