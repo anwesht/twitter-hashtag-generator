@@ -224,7 +224,7 @@ class Batcher:
         all_examples = list()
         skip_count = 0
         with open(self._filepath, 'r') as f:
-            for i, line in enumerate(f):
+            for _, line in enumerate(f):
                 obj = json.loads(line)
                 try:
                     tweet = obj['text']
@@ -333,7 +333,7 @@ class KerasModel:
 
         # Encoder LSTM layer
         encoder_layer = LSTM(units=hps.hidden_dim, return_state=True)
-        encoder_outputs, enc_state_h, enc_state_c = encoder_layer(encoder_emb_inputs)
+        unused_encoder_outputs, enc_state_h, enc_state_c = encoder_layer(encoder_emb_inputs)
         encoder_states = [enc_state_h, enc_state_c]
 
         # ---------------------------------
@@ -449,7 +449,7 @@ class KerasModel:
             logging.info('Training step took: %.3f seconds.', t1 - t0)
 
             # Log the loss history for this training epoch
-            logging.info('Training history: {}', history.history)
+            logging.info('Training history: {}'.format(history.history))
 
             self.save_model(current_file_index)
 
@@ -710,10 +710,11 @@ parser.add_argument('-D', '--debug', action='store_const',
                     help='Print debug messages', dest='logging_level',
                     default=logging.INFO, const=logging.DEBUG)
 
-"""
-NOTE: Argparse caused an error while running on gaivi. Comment ArgParse and uncomment the relevant MyArgs()
-code if there are any issues with arg parse.
-"""
+# --------------------------------------------------------------------------------------------------------------------
+# NOTE: Argparse caused an error while running on gaivi. Comment ArgParse and uncomment the relevant MyArgs()
+# code if there are any issues with arg parse.
+# --------------------------------------------------------------------------------------------------------------------
+
 # class MyArgs(namedtuple('args', ('data_path', 'tweet_vocab', 'hashtag_vocab', 'mode', 'log_root', 'model_root', 'epoch', 'min_vocab_count',
 #                     'hidden_dim', 'emb_dim', 'batch_size', 'max_enc_steps', 'max_dec_steps', 'min_dec_steps',
 #                     'learning_rate', 'rand_unif_init_mag', 'adagrad_init_acc', 'trunc_norm_init_std', 'max_grad_norm',
