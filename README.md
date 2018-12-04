@@ -82,4 +82,65 @@ optional arguments:
   -h, --help  show this help message and exit
 ```
 
+## Using hashtag_generator_keras.py
+This script can be used to train the RNN model and to evaluate the trained model.
+The default arguments are setup to train the model. To load and run the inference loop, set the --load-model flag. The
+model to be loaded is defined by params --load-model-path and --model-num.
+
+```commandline
+usage: hashtag_generator_keras.py [-h] [-dp DATA_PATH] [-tb TWEET_VOCAB]
+                                  [-htv HASHTAG_VOCAB] [-m MODE] [-l LOG_ROOT]
+                                  [-mr MODEL_ROOT] [-e EPOCH]
+                                  [-minvc MIN_VOCAB_COUNT] [-hd HIDDEN_DIM]
+                                  [-ed EMB_DIM] [-bs BATCH_SIZE]
+                                  [-mes MAX_ENC_STEPS] [-maxds MAX_DEC_STEPS]
+                                  [-minds MIN_DEC_STEPS] [-lr LEARNING_RATE]
+                                  [-mrp LOAD_MODEL_PATH] [-lm] [-mn MODEL_NUM]
+                                  [-D]
+
+Script to train and use the hashtag generator RNN model
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -dp DATA_PATH, --data-path DATA_PATH
+                        Path to tokenized json files.
+  -tb TWEET_VOCAB, --tweet-vocab TWEET_VOCAB
+                        Path expression to text vocabulary file.
+  -htv HASHTAG_VOCAB, --hashtag-vocab HASHTAG_VOCAB
+                        Path expression to hashtag vocabulary file.
+  -m MODE, --mode MODE  must be one of train/eval/decode
+  -l LOG_ROOT, --log-root LOG_ROOT
+                        Root directory for all logging.
+  -mr MODEL_ROOT, --model-root MODEL_ROOT
+                        Root directory for all models.
+  -e EPOCH, --epoch EPOCH
+                        dimension of RNN hidden states
+  -minvc MIN_VOCAB_COUNT, --min-vocab-count MIN_VOCAB_COUNT
+                        Minimum word count to include in vocab
+  -hd HIDDEN_DIM, --hidden-dim HIDDEN_DIM
+                        dimension of RNN hidden states
+  -ed EMB_DIM, --emb-dim EMB_DIM
+                        dimension of word embeddings
+  -bs BATCH_SIZE, --batch-size BATCH_SIZE
+                        minibatch size
+  -mes MAX_ENC_STEPS, --max-enc-steps MAX_ENC_STEPS
+                        max timesteps of encoder (max source text tokens)
+  -maxds MAX_DEC_STEPS, --max-dec-steps MAX_DEC_STEPS
+                        max timesteps of decoder (max summary tokens)
+  -minds MIN_DEC_STEPS, --min-dec-steps MIN_DEC_STEPS
+                        Minimum sequence length of generated summary. Applies
+                        only for beam search decoding mode
+  -lr LEARNING_RATE, --learning-rate LEARNING_RATE
+                        learning rate
+  -mrp LOAD_MODEL_PATH, --load-model-path LOAD_MODEL_PATH
+                        Path to saved models to load.
+  -lm, --load-model     Flag to load trained model in --load-model-path,
+                        --model-num and run the inference loop.
+  -mn MODEL_NUM, --model-num MODEL_NUM
+                        The model number to load. This is based on the format
+                        of the saved models during training.
+  -D, --debug           Print debug messages
+```
+
+
 For documentation on the code see: [Wiki](https://github.com/anwesht/twitter-hashtag-generator/wiki/Documentation)

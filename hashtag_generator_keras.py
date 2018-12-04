@@ -698,13 +698,13 @@ parser.add_argument('-mrp', '--load-model-path',
                     help='Path to saved models to load.')
 
 parser.add_argument('-lm', '--load-model',
-                    default=False,
-                    help='Path to saved models to load.')
+                    action='store_true',
+                    help='Flag to load trained model in --load-model-path, --model-num and run the inference loop.')
 
 parser.add_argument('-mn', '--model-num',
                     type=int,
                     default=231,
-                    help='Path to saved models to load.')
+                    help='The model number to load. This is based on the format of the saved models during training.')
 
 parser.add_argument('-D', '--debug', action='store_const',
                     help='Print debug messages', dest='logging_level',
