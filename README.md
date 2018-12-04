@@ -10,8 +10,8 @@ Using text summarization technique using recurrent neural networks for hashtag g
 This project uses Stanford's PTBTokenizer to tokenize the tweet.
 Requires Stanford CoreNLP Server to be running.
 For setup information see: 
-- https://stanfordnlp.github.io/CoreNLP/index.html
-- https://www.khalidalnajjar.com/setup-use-stanford-corenlp-server-python/
+    - [Stanford CoreNLP](https://stanfordnlp.github.io/CoreNLP/index.html)
+    - [Stanford CoreNLP Python](https://www.khalidalnajjar.com/setup-use-stanford-corenlp-server-python/)
 
 Here we use the wrapper from `nltk` package instead of stanfordcorenlp
 
