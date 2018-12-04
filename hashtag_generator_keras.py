@@ -13,7 +13,7 @@ import json
 import logging
 from datetime import datetime
 
-from keras.models import Model
+from keras.models import Model, load_model
 from keras.layers import Input, Embedding, LSTM, Dense
 from keras import metrics, losses, optimizers
 from keras.preprocessing import sequence
@@ -290,7 +290,25 @@ class KerasModel:
         self.hps = hps
         self.tweet_vocab = tweet_vocab
         self.hashtag_vocab = hashtag_vocab
-        self.build_graph()
+
+        if hps.load_model:
+            self.load_model_from_file()
+        else:
+            self.build_graph()
+
+    def load_model_from_file(self):
+        logging.info('Loading trained model...')
+
+        hps = self.hps
+        info = "-{}.hdf5".format(hps.model_num)
+        train_model = os.path.join(hps.load_model_path, 'train'+info)
+        self._train_model = load_model(train_model)
+
+        inf_enc_model = os.path.join(hps.load_model_path, 'inf_encoder' + info)
+        self._inf_encoder_model = load_model(inf_enc_model)
+
+        inf_dec_model = os.path.join(hps.load_model_path, 'inf_decoder' + info)
+        self._inf_decoder_model = load_model(inf_dec_model)
 
     def build_graph(self):
         """ Build the Encoder-Decoder RNN network for training and inference. """
@@ -408,7 +426,7 @@ class KerasModel:
         self._inf_decoder_model.summary(print_fn=lambda x: logging.info(x + '\n'))
 
     def run_training(self):
-        """Repeatedly runs training iterations, logging loss to screen and writing summaries"""
+        """Runs training iterations, logging loss to screen and writing summaries"""
         hps = self.hps
         tokenized_files = [os.path.join(hps.data_path, p) for p in os.listdir(hps.data_path) if p.endswith('.json')]
 
@@ -420,7 +438,7 @@ class KerasModel:
 
         total_epoch = 0
 
-        while total_epoch < self.hps.epoch:  # repeats until interrupted
+        while total_epoch < self.hps.epoch:
             # Get next batch. If current batcher is exhausted, create new batcher.
             # try:
             #     batch = batcher.get()
@@ -463,8 +481,27 @@ class KerasModel:
         self._inf_encoder_model.save(filepath=os.path.join(self.hps.model_root, 'inf_encoder'+info))
         self._inf_decoder_model.save(filepath=os.path.join(self.hps.model_root, 'inf_decoder'+info))
 
+    def run_inference(self):
+        hps = self.hps
+        tokenized_files = [os.path.join(hps.data_path, p) for p in os.listdir(hps.data_path) if p.endswith('.json')]
+        num_files = len(tokenized_files)
+
+        logging.info("Starting inference loop...")
+        total_epoch = 0
+        total_accs = 0.0
+        for current_file_index in range(num_files):
+            if current_file_index == num_files:
+                total_epoch += 1
+
+            total_accs += self.predict_sequence(tokenized_files[current_file_index % num_files])
+
+            # if current_file_index == 5:
+            #     break
+
+        logging.info('Average accuracy per chunk = {}/{} = {}'.format(total_accs, num_files, total_accs/num_files))
+
     # generate target given source sequence
-    def predict_sequence(self, sourcefile, n_steps=2, num_tweets=10):
+    def predict_sequence(self, sourcefile, n_steps=5, num_tweets=10):
         batch = Batcher(sourcefile, self.tweet_vocab, self.hashtag_vocab, self.hps).get()
 
         logging.info('Predicting next batch...')
@@ -473,7 +510,8 @@ class KerasModel:
         tv = self.tweet_vocab
         hv = self.hashtag_vocab
 
-        for i, inp in enumerate(batch.encoder_inputs[:num_tweets]):
+        # for i, inp in enumerate(batch.encoder_inputs[:num_tweets]):
+        for i, inp in enumerate(batch.encoder_inputs):
             # encode
             enc_state = self._inf_encoder_model.predict([inp])
             start_id = self.hashtag_vocab.word2id(START_HASHTAG)
@@ -484,14 +522,10 @@ class KerasModel:
             target_seq = np.zeros(shape=(1, 1))
             target_seq[0, 0] = start_id
 
-            print('target seq: {}'.format(target_seq.shape))
-            print('decoder input seq: {}'.format(batch.decoder_inputs[i].shape))
-
             # collect predictions
             output = list()
             decoded_hashtag = ''
             for t in range(n_steps):
-                print("Step: {}".format(t))
                 # predict next hashtag
                 yhat, h, c = self._inf_decoder_model.predict([target_seq] + enc_state)
                 # store prediction
@@ -518,13 +552,18 @@ class KerasModel:
             target = np.array(output)
             all_outputs.append(target)
 
-            logging.info("Decoded Hashtag: {}".format(decoded_hashtag))
+            tweet = [tv.id2word(t) for t in inp if t != tv.word2id(PAD_TOKEN)]
+            actual = [hv.id2word(h) for h in batch.decoder_inputs[i] if h != hv.word2id(PAD_TOKEN)]
 
-            logging.info('tweet={} actual={}, pred={}'.format(
-                ' '.join([tv.id2word(t) for t in inp if t != tv.word2id(PAD_TOKEN)]),
-                ' '.join([hv.id2word(h) for h in batch.decoder_inputs[i] if t != hv.word2id(PAD_TOKEN)]),
-                decoded_hashtag)
-            )
+            for d in decoded_hashtag.split(' '):
+                if d in actual:
+                    logging.info("Decoded Hashtag: {}".format(decoded_hashtag))
+
+                    logging.info('tweet={} actual={}, pred={}'.format(
+                        ' '.join(tweet),
+                        ' '.join(actual),
+                        decoded_hashtag)
+                    )
 
         logging.info('Calculating metrics on file:{}'.format(sourcefile))
         score = self._train_model.evaluate(x=[batch.encoder_inputs, batch.decoder_inputs],
@@ -532,6 +571,9 @@ class KerasModel:
 
         logging.info('Metrics: {}'.format(self._train_model.metrics_names))
         logging.info('Scores: {}'.format(score))
+
+        acc = score[1]
+        return acc
 
     # decode a one hot encoded string
     def one_hot_decode(self, encoded_seq):
@@ -573,7 +615,10 @@ def main(args):
     model = KerasModel(args, tweet_vocab, hashtag_vocab)
 
     # Train Model OR Run Decoder.
-    model.run_training()
+    if not args.load_model:
+        model.run_training()
+    else:
+        model.run_inference()
 
 
 # ----------------------------------------------
@@ -645,16 +690,10 @@ parser.add_argument('-mes', '--max-enc-steps',
                     default=400,
                     help='max timesteps of encoder (max source text tokens)')
 
-# tf.app.flags.DEFINE_integer('max_dec_steps', 100, 'max timesteps of decoder (max summary tokens)')
 parser.add_argument('-maxds', '--max-dec-steps',
                     type=int,
                     default=10,
                     help='max timesteps of decoder (max summary tokens)')
-
-parser.add_argument('-bsz', '--beam-size',
-                    type=int,
-                    default=4,
-                    help='beam size for beam search decoding.')
 
 parser.add_argument('-minds', '--min-dec-steps',
                     type=int,
@@ -685,6 +724,18 @@ parser.add_argument('-mgn', '--max-grad-norm',
                     type=float,
                     default=2.0,
                     help='for gradient clipping')
+                    
+parser.add_argument('-mrp', '--load-model-path',
+                    default='./saved_models',
+                    help='Path to saved models to load.')
+
+parser.add_argument('-lm', '--load-model',
+                    default=True,
+                    help='Path to saved models to load.')
+
+parser.add_argument('-mrp', '--load-model-path',
+                    default='./saved_models',
+                    help='Path to saved models to load.')
 
 parser.add_argument('-D', '--debug', action='store_const',
                     help='Print debug messages', dest='logging_level',
@@ -695,23 +746,12 @@ parser.add_argument('-D', '--debug', action='store_const',
 class MyArgs(namedtuple('args', ('data_path', 'tweet_vocab', 'hashtag_vocab', 'mode', 'log_root', 'model_root', 'epoch', 'min_vocab_count',
                     'hidden_dim', 'emb_dim', 'batch_size', 'max_enc_steps', 'max_dec_steps', 'min_dec_steps',
                     'learning_rate', 'rand_unif_init_mag', 'adagrad_init_acc', 'trunc_norm_init_std', 'max_grad_norm',
-                    'debug', 'logging_level'))):
+                    'debug', 'logging_level', 'load_model', 'model_num', 'load_model_path'))):
     pass
-
-# Utility flags, for restoring and changing checkpoints
-# tf.app.flags.DEFINE_boolean('restore_best_model', False,
-#                             'Restore the best model in the eval/ dir and save it in the train/ dir, '
-#                             'ready to be used for further training. Useful for early stopping, or if your training '
-#                             'checkpoint has become corrupted with e.g. NaN values.')
-
-# Debugging. See https://www.tensorflow.org/programmers_guide/debugger
-# tf.app.flags.DEFINE_boolean('debug', False, "Run in tensorflow's debug mode (watches for NaN/inf values)")
 
 
 if __name__ == "__main__":
     # args = parser.parse_args()
-    # logging.basicConfig(format=LOG_FMT, level=args.logging_level,
-    #                     filename="output.{}.log".format(datetime.now()), filemode='a')
 
     args = MyArgs(data_path='./tokenized_tweets4/',
                   tweet_vocab='./tokenized_tweets4/tweets-4.json.tweet_vocab.txt',
@@ -719,6 +759,9 @@ if __name__ == "__main__":
                   mode='train',
                   log_root='./logs/{}'.format(datetime.now()),
                   model_root='./models',
+                  load_model_path='./saved_models',
+                  load_model=True,
+                  model_num=231,
                   epoch=1,
                   min_vocab_count=50,
                   hidden_dim=256,
